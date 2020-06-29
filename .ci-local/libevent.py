@@ -62,3 +62,10 @@ if os.environ.get('WINE')=='64':
         F.write('\nCROSS_COMPILER_TARGET_ARCHS+=windows-x64-mingw\n')
 
     check_call('make -C bundle libevent.windows-x64-mingw', shell=True, env=env)
+
+elif os.environ.get('WINE')=='32':
+    print('Enable mingw32')
+    with open('configure/CONFIG_SITE.local', 'a') as F:
+        F.write('\nCROSS_COMPILER_TARGET_ARCHS+=win32-x86-mingw\n')
+
+    check_call('make -C bundle libevent.win32-x86-mingw', shell=True, env=env)
