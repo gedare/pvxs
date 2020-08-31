@@ -111,6 +111,7 @@ struct GPROp : public OperationBase
 {
     std::function<Value(Value&&)> builder;
     std::function<void(Result&&)> done;
+    std::function<void (const Value&)> onInit;
     Value pvRequest;
     Value rpcarg;
     Result result;
@@ -135,10 +136,11 @@ struct GPROp : public OperationBase
         _cancel(true);
     }
 
-    void setDone(decltype (done)&& cb)
+    void setDone(decltype (done)&& donecb, decltype (onInit)&& initcb)
     {
-        if(cb) {
-            done = std::move(cb);
+        onInit = std::move(initcb);
+        if(donecb) {
+            done = std::move(donecb);
         } else {
             auto waiter = this->waiter = std::make_shared<ResultWaiter>();
             done = [waiter](Result&& result) {
@@ -368,6 +370,14 @@ void Connection::handle_GPR(pva_app_msg_t cmd)
 
     } else if(gpr->state==GPROp::Creating) {
 
+        try {
+            if(gpr->onInit)
+                gpr->onInit(data);
+        } catch(std::exception& e) {
+            gpr->result = Result(std::current_exception());
+            gpr->state = GPROp::Done;
+        }
+
         if(cmd==CMD_PUT && gpr->getOput) {
             gpr->state = GPROp::GetOPut;
 
@@ -492,7 +502,7 @@ std::shared_ptr<Operation> GetBuilder::_exec_get()
         auto chan = Channel::build(ctx->shared_from_this(), _name);
 
         auto op = std::make_shared<GPROp>(Operation::Get, chan);
-        op->setDone(std::move(_result));
+        op->setDone(std::move(_result), std::move(_onInit));
         op->pvRequest = _buildReq();
 
         chan->pending.push_back(op);
@@ -519,7 +529,7 @@ std::shared_ptr<Operation> PutBuilder::exec()
         auto chan = Channel::build(ctx->shared_from_this(), _name);
 
         auto op = std::make_shared<GPROp>(Operation::Put, chan);
-        op->setDone(std::move(_result));
+        op->setDone(std::move(_result), std::move(_onInit));
 
         if(_builder) {
             op->builder = std::move(_builder);
@@ -560,7 +570,7 @@ std::shared_ptr<Operation> RPCBuilder::exec()
         auto chan = Channel::build(ctx->shared_from_this(), _name);
 
         auto op = std::make_shared<GPROp>(Operation::RPC, chan);
-        op->setDone(std::move(_result));
+        op->setDone(std::move(_result), std::move(_onInit));
         if(_argument) {
             op->rpcarg = std::move(_argument);
         } else if(_args) {
