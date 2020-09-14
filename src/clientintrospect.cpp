@@ -69,6 +69,8 @@ struct InfoOp : public OperationBase
         return ret;
     }
 
+    void reExec(const Value& arg) override final {}
+
     virtual void createOp() override final
     {
         if(state!=Connecting) {
