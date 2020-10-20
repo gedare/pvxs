@@ -8,11 +8,16 @@
 #define PVXS_UTIL_H
 
 #include <map>
+#include <deque>
 #include <functional>
 #include <ostream>
 #include <type_traits>
 
 #include <osiSock.h>
+#include <epicsEvent.h>
+#include <epicsMutex.h>
+#include <epicsGuard.h>
+
 #include <event2/util.h>
 
 #ifdef _WIN32
@@ -150,6 +155,99 @@ struct PVXS_API Detailed {
 private:
     std::ostream *strm;
     int lvl;
+};
+
+/** Thread safe multi-producer, single-consumer queue
+ *
+ * If constructed with limit>0, then bounded.
+ */
+template<typename T>
+class MPSCFIFO {
+    epicsMutex lock;
+    epicsEvent notifyW, notifyR;
+    std::deque<T> Q;
+    size_t nlimit=0u;
+    unsigned nwriters=0u;
+
+    typedef epicsGuard<epicsMutex> Guard;
+    typedef epicsGuardRelease<epicsMutex> UnGuard;
+public:
+    typedef T value_type;
+
+    MPSCFIFO() = default;
+    explicit MPSCFIFO(size_t limit) :nlimit(limit) {}
+
+    /** Move a new element into the queue.
+     *
+     * A bounded queue will block push() while full.
+     */
+    void push(T&& ent) {
+        bool wakeup;
+        {
+            Guard G(lock);
+            while(nlimit && Q.size()>=nlimit) {
+                nwriters++;
+                {
+                    UnGuard U(G);
+                    notifyW.wait();
+                }
+                nwriters--;
+            }
+            wakeup = Q.empty();
+            Q.push_back(std::move(ent));
+        }
+        if(wakeup)
+            notifyR.signal();
+    }
+
+    /** Remove an element from the queue.
+     *
+     * Blocks while queue is empty.
+     */
+    T pop() {
+        bool wakeup;
+        T ret;
+        {
+            Guard G(lock);
+            while(Q.empty()) {
+                UnGuard U(G);
+                notifyR.wait();
+            }
+            wakeup = nwriters && nlimit && Q.size()<nlimit;
+            ret = std::move(Q.front());
+            Q.pop_front();
+        }
+        if(wakeup)
+            notifyW.signal();
+        return ret;
+    }
+
+    class iterator {
+        MPSCFIFO *Q = nullptr;
+        bool isBegin=true;
+        iterator(MPSCFIFO* Q, bool isBegin) :Q(Q), isBegin(isBegin) {}
+        friend class MPSCFIFO;
+    public:
+        iterator() = default;
+        iterator& operator++() {
+            // This is an infinite iterator
+            return *this;
+        }
+        iterator operator++(int) {
+            iterator ret(*this);
+            ++(*this);
+            return ret;
+        }
+        T operator*() const {
+            return Q->pop(); // all this boilerplate, just to pop()...
+        }
+        bool operator==(const iterator& o) const { return isBegin==o.isBegin; }
+        bool operator!=(const iterator& o) const { return !(o==*this); }
+    };
+
+    //! Support "iteration" of queue.  One way to express a loop calling pop()
+    iterator begin() { return iterator(this, true); }
+    iterator end() { return iterator(this, false); }
 };
 
 } // namespace pvxs
